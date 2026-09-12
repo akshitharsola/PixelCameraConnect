@@ -60,6 +60,9 @@ To keep the watch UI small and the phone-side accessibility logic focused on wha
 
 ## Setup
 
+### Download
+Grab the latest phone and watch APKs from the [Releases page](https://github.com/akshitharsola/PixelCameraConnect/releases) — no build required. Or build them yourself, see [Building](#building) below.
+
 ### Install
 You'll need to sideload the watch APK using one of these tools:
 - [Wear Installer 2](https://play.google.com/store/apps/details?id=org.freepoc.wearinstaller2) — simple ADB-based installer over Wi-Fi
