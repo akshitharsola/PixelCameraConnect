@@ -1,7 +1,5 @@
 package com.cameraremote.wear
 
-import android.content.Intent
-import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -14,13 +12,9 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
 import android.view.KeyEvent
-import android.view.MotionEvent
-import android.view.View
 import android.view.WindowManager
 import android.widget.ImageButton
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.InputDeviceCompat
-import androidx.core.view.MotionEventCompat
 import com.cameraremote.wear.databinding.ActivityRemoteBinding
 import com.google.android.gms.wearable.DataClient
 import com.google.android.material.color.DynamicColors
@@ -32,7 +26,6 @@ import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.Wearable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -64,13 +57,8 @@ class RemoteActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListe
         private const val KEY_VIBRATE_COUNTDOWN = "vibrate_on_countdown"
 
         // Message/Data paths
-        private const val PATH_COMMAND = "/camera_remote"
         private const val PATH_STATUS = "/camera_remote/status"
         private const val PATH_SETTINGS = "/camera_remote/settings"
-        private const val PATH_PREVIEW = "/camera_remote/preview"
-
-        // Zoom
-        private const val ZOOM_INTERVAL_MS = 200L
     }
 
     private lateinit var binding: ActivityRemoteBinding
@@ -84,9 +72,7 @@ class RemoteActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListe
     private var hapticDurationMs = DEFAULT_HAPTIC_DURATION_MS.toLong()
     private var vibrateOnCountdown = true
     private var captureCount = 0
-    private var lastPreviewUri: String? = null
     private var isRecording = false
-    private var isBursting = false
     private var wakeLock: PowerManager.WakeLock? = null
     private var recordingStartTime = 0L
     private val recordingTimerHandler = Handler(Looper.getMainLooper())
@@ -101,9 +87,6 @@ class RemoteActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListe
             }
         }
     }
-    private val zoomQueue = mutableListOf<String>()
-    private var isProcessingZoom = false
-    private var lastZoomSentTime = 0L
     private val heartbeatHandler = Handler(Looper.getMainLooper())
     private val heartbeatRunnable = object : Runnable {
         override fun run() {
@@ -196,103 +179,27 @@ class RemoteActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListe
     }
 
     private fun setupButtons() {
-        fun bindButton(button: ImageButton, command: String, label: String) {
-            button.setOnClickListener {
-                Log.d(TAG, "Button clicked: $label ($command)")
-                vibrate()
-                sendCommand(command)
-            }
-            Log.d(TAG, "Button bound: $label -> ${button.id}")
-        }
-
-        // Preview button
-        binding.btnPreview.setOnClickListener {
-            vibrate()
-            sendCommand("preview_capture")
-        }
-
-        // Burst Timer button: countdown then burst capture
-        binding.btnBurstTimer.setOnClickListener {
-            vibrate()
-            if (isCountdownActive) {
-                // Cancel active countdown
-                countdownTimer?.cancel()
-                isCountdownActive = false
-                binding.tvStatus.text = "Cancelled"
-                return@setOnClickListener
-            }
-            isCountdownActive = true
-            val totalMs = timerSeconds * COUNTDOWN_TICK_MS
-            countdownTimer = object : CountDownTimer(totalMs, COUNTDOWN_TICK_MS) {
-                override fun onTick(millisUntilFinished: Long) {
-                    val secondsLeft = (millisUntilFinished / MS_PER_SECOND) + 1
-                    runOnUiThread { binding.tvStatus.text = "Burst $secondsLeft\u2026" }
-                    if (vibrateOnCountdown) vibrate()
-                }
-                override fun onFinish() {
-                    isCountdownActive = false
-                    sendCommand("burst_capture")
-                    runOnUiThread { binding.tvStatus.text = "Burst!" }
-                    vibrate()
-                }
-            }.start()
-        }
-
-        // Preview overlay buttons
-        binding.btnPreviewSave.setOnClickListener {
-            vibrate()
-            binding.previewOverlay.visibility = View.GONE
-            binding.tvStatus.text = "Saved"
-        }
-        binding.btnPreviewDelete.setOnClickListener {
-            vibrate()
-            lastPreviewUri?.let { uri ->
-                sendCommand("delete_preview:$uri")
-            }
-            binding.previewOverlay.visibility = View.GONE
-            binding.tvStatus.text = "Deleted"
-        }
-
-        // Shutter: tap to capture (or cancel burst if bursting), long-press for burst mode
+        // Shutter: tap to capture
         binding.btnCapture.setOnClickListener {
             vibrate()
-            if (isBursting) {
-                Log.d(TAG, "Shutter clicked: cancelling burst")
-                isBursting = false
-                sendCommand("cancel_burst")
-            } else {
-                Log.d(TAG, "Shutter clicked: capture")
-                sendCommand("capture")
-            }
+            Log.d(TAG, "Shutter clicked: capture")
+            sendCommand("capture")
         }
-        binding.btnCapture.setOnLongClickListener {
-            vibrate()
-            isBursting = true
-            sendCommand("burst_capture")
-            true
-        }
-
-        // Open camera / photo mode, long-press for gallery
-        bindButton(binding.btnOpenCamera, "open_camera", "Camera")
-        binding.btnOpenCamera.setOnLongClickListener {
-            vibrate()
-            sendCommand("open_gallery")
-            true
-        }
-
-        // Flash toggle on/off
-        bindButton(binding.btnFlash, "toggle_flash", "Flash")
 
         // Flip / switch camera
-        bindButton(binding.btnSwitch, "switch_camera", "Switch")
-
-        // Video mode
-        bindButton(binding.btnVideo, "open_video", "Video")
-
-        // Help button
-        binding.btnHelp.setOnClickListener {
+        binding.btnSwitch.setOnClickListener {
             vibrate()
-            startActivity(Intent(this, HelpActivity::class.java))
+            sendCommand("switch_camera")
+        }
+
+        // Scroll the mode row (Pro | Video | Photo | Fastshot | Portrait)
+        binding.btnScrollLeft.setOnClickListener {
+            vibrate()
+            sendCommand("scroll_mode_right")
+        }
+        binding.btnScrollRight.setOnClickListener {
+            vibrate()
+            sendCommand("scroll_mode_left")
         }
 
         // Timer: tap to start/cancel countdown, long-press to change duration
@@ -313,7 +220,6 @@ class RemoteActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListe
                 else -> 3
             }
             vibrate()
-            binding.tvStatus.text = "Timer: ${timerSeconds}s"
             true
         }
     }
@@ -333,7 +239,7 @@ class RemoteActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListe
             override fun onFinish() {
                 isCountdownActive = false
                 runOnUiThread {
-                    binding.tvStatus.text = "Capturing..."
+                    binding.tvStatus.text = ""
                 }
                 vibrate()
                 sendCommand("capture")
@@ -345,7 +251,7 @@ class RemoteActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListe
         countdownTimer?.cancel()
         countdownTimer = null
         isCountdownActive = false
-        binding.tvStatus.text = "Cancelled"
+        binding.tvStatus.text = ""
     }
 
     override fun onResume() {
@@ -399,12 +305,7 @@ class RemoteActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListe
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             vibrate()
-            if (isBursting) {
-                isBursting = false
-                sendCommand("cancel_burst")
-            } else {
-                sendCommand("capture")
-            }
+            sendCommand("capture")
             return true
         }
         return super.onKeyDown(keyCode, event)
@@ -436,7 +337,6 @@ class RemoteActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListe
 
     private fun sendCommand(command: String) {
         Log.d(TAG, "sendCommand: $command")
-        binding.tvStatus.text = formatCommand(command)
 
         scope.launch {
             try {
@@ -444,38 +344,19 @@ class RemoteActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListe
                 Log.d(TAG, "Sending '$command' to ${nodes.size} node(s)")
                 if (nodes.isEmpty()) {
                     Log.w(TAG, "No connected nodes for command: $command")
-                    runOnUiThread { binding.tvStatus.text = "No phone connected" }
                     return@launch
                 }
                 val mc = messageClient ?: run {
                     Log.e(TAG, "MessageClient is null")
-                    runOnUiThread { binding.tvStatus.text = "API not available" }
                     return@launch
                 }
                 for (node in nodes) {
                     mc.sendMessage(node.id, "/camera_remote", command.toByteArray()).await()
                     Log.d(TAG, "Command '$command' sent to ${node.displayName}")
-                    runOnUiThread {
-                        binding.tvStatus.text = "Sent: ${formatCommand(command)}"
-                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send command: $command", e)
-                runOnUiThread { binding.tvStatus.text = "Send failed" }
             }
-        }
-    }
-
-    private fun formatCommand(command: String): String {
-        return when {
-            command == "open_camera" -> "Opening..."
-            command == "capture" -> "Capture"
-            command == "toggle_flash" -> "Flash..."
-            command == "switch_camera" -> "Switching..."
-            command == "open_video" -> "Video..."
-            command.startsWith("zoom_in") -> "Zoom +"
-            command.startsWith("zoom_out") -> "Zoom \u2212"
-            else -> command
         }
     }
 
@@ -485,7 +366,8 @@ class RemoteActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListe
             Log.d(TAG, "Status received from phone: $status")
             if (status == "captured") captureCount++
 
-            // Handle recording state
+            // Handle recording state \u2014 the REC timer is functional, not just
+            // informational, so it's the one status text that stays visible.
             if (status == "recording_started") {
                 isRecording = true
                 recordingStartTime = System.currentTimeMillis()
@@ -501,88 +383,18 @@ class RemoteActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListe
                 isRecording = false
                 recordingTimerHandler.removeCallbacks(recordingTimerRunnable)
                 runOnUiThread {
-                    binding.tvStatus.text = "Recording saved"
+                    binding.tvStatus.text = ""
                     vibrate()
                 }
                 return
             }
 
-            // Stop recording timer if any other status comes in
             if (isRecording && status != "recording_started") {
                 isRecording = false
                 recordingTimerHandler.removeCallbacks(recordingTimerRunnable)
             }
 
-            runOnUiThread {
-                val display = if (status == "captured" && captureCount > 1) {
-                    "${formatStatus(status)} ($captureCount)"
-                } else {
-                    formatStatus(status)
-                }
-                binding.tvStatus.text = display
-                vibrate()
-            }
-        }
-    }
-
-    private fun formatStatus(status: String): String {
-        return when (status) {
-            "camera_opened" -> "Camera ready"
-            "captured" -> "Captured!"
-            "capture_failed" -> "Capture failed"
-            "camera_switched" -> "Switched"
-            "switch_not_found" -> "Switch N/A"
-            "flash_on" -> "Flash ON"
-            "flash_off" -> "Flash OFF"
-            "flash_not_found" -> "Flash N/A"
-            "recording_started" -> "\u25CF REC 00:00"
-            "recording_stopped" -> "Recording saved"
-            "video_camera_opened" -> "Video mode"
-            "video_open_failed" -> "Video failed"
-            "camera_open_failed" -> "Can't open camera"
-            "camera_not_open" -> "Open camera first"
-            "no_camera_app" -> "No camera app"
-            "photo_mode" -> "Switching to photo..."
-            "shutter_not_found" -> "Shutter N/A"
-            "unknown_command" -> "Unknown command"
-            "service_not_enabled" -> "Enable service!"
-            "gallery_opened" -> "Gallery"
-            "gallery_failed" -> "Gallery N/A"
-            "camera_detected" -> "Camera ready"
-            "preview_capturing" -> "Capturing\u2026"
-            "preview_ready" -> "Preview"
-            "preview_failed" -> "Preview N/A"
-            "preview_deleted" -> "Deleted"
-            "preview_delete_failed" -> "Delete failed"
-            "preview_delete_denied" -> "Delete denied"
-            "preview_delete_cancelled" -> "Delete cancelled"
-            "burst_cancelled" -> {
-                isBursting = false
-                "Burst cancelled"
-            }
-            else -> {
-                // Handle dynamic statuses like "burst_5", "timer_3s"
-                when {
-                    status.startsWith("burst_") && status.contains("_of_") -> {
-                        // burst_2_of_5 -> "Burst 2/5"
-                        val parts = status.removePrefix("burst_").split("_of_")
-                        val current = parts[0].toIntOrNull() ?: 0
-                        val total = parts[1].toIntOrNull() ?: 0
-                        if (current >= total) isBursting = false
-                        "Burst ${parts[0]}/${parts[1]}"
-                    }
-                    status.startsWith("burst_") -> {
-                        isBursting = true
-                        val count = status.removePrefix("burst_").toIntOrNull() ?: 0
-                        "Burst $count\u00D7"
-                    }
-                    status.startsWith("timer_") -> {
-                        val sec = status.removePrefix("timer_").removeSuffix("s")
-                        "Timer $sec\u2026"
-                    }
-                    else -> status.replace("_", " ").replaceFirstChar { it.uppercase() }
-                }
-            }
+            vibrate()
         }
     }
 
@@ -597,21 +409,6 @@ class RemoteActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListe
                         vibrateOnCountdown = dataMap.getBoolean(KEY_VIBRATE_COUNTDOWN, true)
                         saveSettingsLocally()
                         Log.d(TAG, "Settings updated: haptic=${hapticDurationMs}ms, timer=${timerSeconds}s, vibrateCountdown=$vibrateOnCountdown")
-                    }
-                    PATH_PREVIEW -> {
-                        val dataMap = DataMapItem.fromDataItem(event.dataItem).dataMap
-                        val imageBytes = dataMap.getByteArray("image")
-                        val uri = dataMap.getString("uri")
-                        if (imageBytes != null && imageBytes.isNotEmpty()) {
-                            lastPreviewUri = uri
-                            val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-                            runOnUiThread {
-                                binding.previewImage.setImageBitmap(bitmap)
-                                binding.previewOverlay.visibility = View.VISIBLE
-                                binding.tvStatus.text = "Preview"
-                            }
-                            Log.d(TAG, "Preview received: ${imageBytes.size} bytes, uri=$uri")
-                        }
                     }
                 }
             }
@@ -631,54 +428,6 @@ class RemoteActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListe
             Log.w(TAG, "Failed to apply dynamic background, using black", e)
             binding.root.setBackgroundColor(Color.BLACK)
         }
-    }
-
-    private val processZoomRunnable = object : Runnable {
-        override fun run() {
-            if (zoomQueue.isNotEmpty()) {
-                // Batch all consecutive same-direction ticks into one command
-                val direction = zoomQueue.removeAt(0)
-                var steps = 1
-                while (zoomQueue.isNotEmpty() && zoomQueue[0] == direction) {
-                    zoomQueue.removeAt(0)
-                    steps++
-                }
-                // Scale steps with power curve: slow=precise (1→1), fast=accelerated (5→11, 10→32)
-                val scaledSteps = Math.ceil(Math.pow(steps.toDouble(), 1.5)).toInt()
-                val dir = if (direction.startsWith("zoom_in")) "zoom_in" else "zoom_out"
-                sendCommand("$dir:$scaledSteps")
-                lastZoomSentTime = System.currentTimeMillis()
-                // Always schedule next check — more ticks may arrive during the wait
-                heartbeatHandler.postDelayed(this, ZOOM_INTERVAL_MS)
-            } else {
-                isProcessingZoom = false
-            }
-        }
-    }
-
-    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
-        if (event.action == MotionEvent.ACTION_SCROLL &&
-            event.isFromSource(InputDeviceCompat.SOURCE_ROTARY_ENCODER)) {
-            val delta = -event.getAxisValue(MotionEventCompat.AXIS_SCROLL)
-
-            // Queue rotation ticks — they arrive ~10ms apart from bezel
-            if (delta > 0) {
-                zoomQueue.add("zoom_in:1")
-            } else if (delta < 0) {
-                zoomQueue.add("zoom_out:1")
-            }
-
-            if (!isProcessingZoom) {
-                isProcessingZoom = true
-                // Ensure minimum interval since last command sent
-                val elapsed = System.currentTimeMillis() - lastZoomSentTime
-                val delay = maxOf(0L, ZOOM_INTERVAL_MS - elapsed)
-                heartbeatHandler.postDelayed(processZoomRunnable, delay)
-            }
-            vibrate()
-            return true
-        }
-        return super.onGenericMotionEvent(event)
     }
 
     private fun vibrate() {

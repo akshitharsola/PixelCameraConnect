@@ -31,7 +31,6 @@ class CameraRemoteTileService : androidx.wear.tiles.TileService() {
         private const val COLOR_SHUTTER = 0xFFF5F5F5.toInt()
         private const val COLOR_CAMERA = 0xFF90CAF9.toInt()
         private const val COLOR_VIDEO = 0xFFEF9A9A.toInt()
-        private const val COLOR_FLASH = 0xFFFFE082.toInt()
         private const val COLOR_SWITCH = 0xFFB0BEC5.toInt()
         private const val COLOR_TIMER = 0xFFFFCC80.toInt()
         private const val COLOR_OPEN_APP = 0xFFD0BCFF.toInt()
@@ -39,8 +38,8 @@ class CameraRemoteTileService : androidx.wear.tiles.TileService() {
         // Command strings
         private const val CMD_OPEN_CAMERA = "open_camera"
         private const val CMD_CAPTURE = "capture"
-        private const val CMD_OPEN_VIDEO = "open_video"
-        private const val CMD_TOGGLE_FLASH = "toggle_flash"
+        private const val CMD_SCROLL_MODE_LEFT = "scroll_mode_left"
+        private const val CMD_SCROLL_MODE_RIGHT = "scroll_mode_right"
         private const val CMD_SWITCH_CAMERA = "switch_camera"
         private const val CMD_CAPTURE_TIMER = "capture_timer"
 
@@ -59,8 +58,8 @@ class CameraRemoteTileService : androidx.wear.tiles.TileService() {
         // Resource IDs for icons
         private const val RES_IC_CAMERA = "ic_camera"
         private const val RES_IC_SHUTTER = "ic_shutter"
-        private const val RES_IC_VIDEO = "ic_video"
-        private const val RES_IC_FLASH = "ic_flash"
+        private const val RES_IC_CHEVRON_LEFT = "ic_chevron_left"
+        private const val RES_IC_CHEVRON_RIGHT = "ic_chevron_right"
         private const val RES_IC_FLIP = "ic_flip"
         private const val RES_IC_TIMER = "ic_timer"
         private const val RES_IC_OPEN_APP = "ic_open_app"
@@ -95,8 +94,8 @@ class CameraRemoteTileService : androidx.wear.tiles.TileService() {
         mapOf(
             RES_IC_CAMERA to R.drawable.tile_ic_photo_camera,
             RES_IC_SHUTTER to R.drawable.tile_ic_shutter,
-            RES_IC_VIDEO to R.drawable.tile_ic_videocam,
-            RES_IC_FLASH to R.drawable.tile_ic_flash,
+            RES_IC_CHEVRON_LEFT to R.drawable.tile_ic_chevron_left,
+            RES_IC_CHEVRON_RIGHT to R.drawable.tile_ic_chevron_right,
             RES_IC_FLIP to R.drawable.tile_ic_flip_camera,
             RES_IC_TIMER to R.drawable.tile_ic_timer,
             RES_IC_OPEN_APP to R.drawable.tile_ic_open_app
@@ -139,12 +138,12 @@ class CameraRemoteTileService : androidx.wear.tiles.TileService() {
                     .addContent(row(
                         button("Camera", CMD_OPEN_CAMERA, COLOR_CAMERA, RES_IC_CAMERA),
                         button("Snap", CMD_CAPTURE, COLOR_SHUTTER, RES_IC_SHUTTER),
-                        button("Video", CMD_OPEN_VIDEO, COLOR_VIDEO, RES_IC_VIDEO)
+                        button("Flip", CMD_SWITCH_CAMERA, COLOR_SWITCH, RES_IC_FLIP)
                     ))
                     .addContent(spacer(6f))
                     .addContent(row(
-                        button("Flash", CMD_TOGGLE_FLASH, COLOR_FLASH, RES_IC_FLASH),
-                        button("Flip", CMD_SWITCH_CAMERA, COLOR_SWITCH, RES_IC_FLIP),
+                        button("Mode ◀", CMD_SCROLL_MODE_LEFT, COLOR_VIDEO, RES_IC_CHEVRON_LEFT),
+                        button("Mode ▶", CMD_SCROLL_MODE_RIGHT, COLOR_VIDEO, RES_IC_CHEVRON_RIGHT),
                         button("Timer", CMD_CAPTURE_TIMER, COLOR_TIMER, RES_IC_TIMER)
                     ))
                     .addContent(spacer(6f))

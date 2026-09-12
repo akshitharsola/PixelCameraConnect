@@ -25,14 +25,10 @@ class SettingsActivity : AppCompatActivity() {
         // Validation ranges — Camera Control
         private const val CAMERA_LAUNCH_DELAY_MIN_MS = 100
         private const val CAMERA_LAUNCH_DELAY_MAX_MS = 10000
-        private const val BURST_COUNT_MIN = 1
-        private const val BURST_COUNT_MAX = 50
         private const val FALLBACK_POSITION_MIN = 10
         private const val FALLBACK_POSITION_MAX = 99
         private const val GESTURE_TAP_DURATION_MIN_MS = 10
         private const val GESTURE_TAP_DURATION_MAX_MS = 500
-        private const val FLASH_SUBMENU_DELAY_MIN_MS = 50
-        private const val FLASH_SUBMENU_DELAY_MAX_MS = 2000
 
         // Validation ranges — Watch
         private const val HAPTIC_DURATION_MIN_MS = 5
@@ -56,8 +52,6 @@ class SettingsActivity : AppCompatActivity() {
         val shutterFallbackSwitch = findViewById<SwitchMaterial>(R.id.shutterFallbackSwitch)
         val fallbackPositionInput = findViewById<EditText>(R.id.fallbackPositionInput)
         val gestureTapDurationInput = findViewById<EditText>(R.id.gestureTapDurationInput)
-        val flashSubmenuDelayInput = findViewById<EditText>(R.id.flashSubmenuDelayInput)
-        val burstCountInput = findViewById<EditText>(R.id.burstCountInput)
 
         // Watch section
         val hapticDurationInput = findViewById<EditText>(R.id.hapticDurationInput)
@@ -69,11 +63,9 @@ class SettingsActivity : AppCompatActivity() {
         // Load current values - Camera Control
         autoOpenCameraSwitch.isChecked = settings.isAutoOpenCameraEnabled()
         cameraLaunchDelayInput.setText(settings.getCameraLaunchDelayMs().toString())
-        burstCountInput.setText(settings.getBurstCount().toString())
         shutterFallbackSwitch.isChecked = settings.isShutterFallbackEnabled()
         fallbackPositionInput.setText(settings.getShutterFallbackPosition().toString())
         gestureTapDurationInput.setText(settings.getGestureTapDurationMs().toString())
-        flashSubmenuDelayInput.setText(settings.getFlashSubmenuDelayMs().toString())
 
         // Load current values - Watch
         hapticDurationInput.setText(settings.getHapticDurationMs().toString())
@@ -94,8 +86,8 @@ class SettingsActivity : AppCompatActivity() {
             override fun afterTextChanged(s: Editable?) { showSave() }
         }
         val inputs = listOf(
-            cameraLaunchDelayInput, burstCountInput, fallbackPositionInput, gestureTapDurationInput,
-            flashSubmenuDelayInput, hapticDurationInput, defaultTimerInput
+            cameraLaunchDelayInput, fallbackPositionInput, gestureTapDurationInput,
+            hapticDurationInput, defaultTimerInput
         )
         for (input in inputs) {
             input.addTextChangedListener(textWatcher)
@@ -106,13 +98,6 @@ class SettingsActivity : AppCompatActivity() {
             val launchDelay = cameraLaunchDelayInput.text.toString().trim().toIntOrNull()
             if (launchDelay == null || launchDelay < CAMERA_LAUNCH_DELAY_MIN_MS || launchDelay > CAMERA_LAUNCH_DELAY_MAX_MS) {
                 Toast.makeText(this, "Camera launch delay must be between $CAMERA_LAUNCH_DELAY_MIN_MS and $CAMERA_LAUNCH_DELAY_MAX_MS ms", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-
-            // Validate Burst Count
-            val burstCount = burstCountInput.text.toString().trim().toIntOrNull()
-            if (burstCount == null || burstCount < BURST_COUNT_MIN || burstCount > BURST_COUNT_MAX) {
-                Toast.makeText(this, "Burst photo count must be between $BURST_COUNT_MIN and $BURST_COUNT_MAX", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
 
@@ -127,13 +112,6 @@ class SettingsActivity : AppCompatActivity() {
             val gestureDur = gestureTapDurationInput.text.toString().trim().toIntOrNull()
             if (gestureDur == null || gestureDur < GESTURE_TAP_DURATION_MIN_MS || gestureDur > GESTURE_TAP_DURATION_MAX_MS) {
                 Toast.makeText(this, "Gesture tap duration must be between $GESTURE_TAP_DURATION_MIN_MS and $GESTURE_TAP_DURATION_MAX_MS ms", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-
-            // Validate Flash Submenu Delay
-            val flashDelay = flashSubmenuDelayInput.text.toString().trim().toIntOrNull()
-            if (flashDelay == null || flashDelay < FLASH_SUBMENU_DELAY_MIN_MS || flashDelay > FLASH_SUBMENU_DELAY_MAX_MS) {
-                Toast.makeText(this, "Flash submenu delay must be between $FLASH_SUBMENU_DELAY_MIN_MS and $FLASH_SUBMENU_DELAY_MAX_MS ms", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
 
@@ -154,11 +132,9 @@ class SettingsActivity : AppCompatActivity() {
             // All validation passed — save all settings
             settings.setAutoOpenCameraEnabled(autoOpenCameraSwitch.isChecked)
             settings.setCameraLaunchDelayMs(launchDelay)
-            settings.setBurstCount(burstCount)
             settings.setShutterFallbackEnabled(shutterFallbackSwitch.isChecked)
             settings.setShutterFallbackPosition(fallbackPos)
             settings.setGestureTapDurationMs(gestureDur)
-            settings.setFlashSubmenuDelayMs(flashDelay)
             settings.setHapticDurationMs(hapticDur)
             settings.setDefaultTimerSeconds(timerSec)
             settings.setVibrateOnCountdownEnabled(vibrateCountdownSwitch.isChecked)

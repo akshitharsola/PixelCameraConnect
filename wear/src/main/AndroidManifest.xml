@@ -26,10 +26,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".HelpActivity"
-            android:exported="false" />
-
         <!-- Watch log collector service -->
         <service
             android:name=".LogCollectorService"

@@ -2,11 +2,8 @@ package com.cameraremote.mobile
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
-import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Path
 import android.os.Handler
 import android.os.Looper
@@ -22,9 +19,7 @@ import android.os.Build
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import com.google.android.gms.wearable.MessageClient
-import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
-import java.io.ByteArrayOutputStream
 
 class CameraControlService : AccessibilityService() {
 
@@ -37,38 +32,31 @@ class CameraControlService : AccessibilityService() {
         val isRunning: Boolean get() = instance != null
 
         // Message/Data paths
-        private const val PATH_PREVIEW = "/camera_remote/preview"
         private const val PATH_STATUS = "/camera_remote/status"
 
         // Timing constants
         private const val MODE_SWITCH_DELAY_MS = 800L
-        private const val FLASH_SUBMENU_RETRY_DELAY_MS = 500L
-        private const val PREVIEW_CAPTURE_DELAY_MS = 2500L
-        private const val BURST_CAPTURE_INTERVAL_MS = 500L
-        private const val BURST_CAPTURE_FLASH_INTERVAL_MS = 900L
-        private const val BURST_SHUTTER_RETRY_DELAY_MS = 100L
-        private const val ZOOM_GESTURE_DURATION_MS = 150L
 
-        // Zoom
-        private const val ZOOM_BASE_OFFSET_FRACTION = 0.1f
-        private const val ZOOM_MAX_STEPS = 5
+        // MIUI camera UI geometry (proportional, mapped from screenshots).
+        // This camera app's shutter/switch/mode controls don't reliably respond
+        // to AccessibilityNodeInfo.ACTION_CLICK (same issue fixed for the shutter
+        // button), so we drive them with real coordinate taps/swipes instead.
+        private const val MIUI_FLIP_CAMERA_X_FRACTION = 0.902f
+        private const val MIUI_MODE_ROW_Y_FRACTION = 0.7825f
+        private const val MIUI_MODE_SWIPE_DURATION_MS = 250L
 
-        // Flash submenu detection
-        private const val FLASH_SUBMENU_SCREEN_TOP_FRACTION = 3f / 10f
-        private const val FLASH_SUBMENU_MIN_NODE_SIZE = 10
-        private const val FLASH_SUBMENU_TOOLBAR_THRESHOLD = 150
-        private const val FLASH_SUBMENU_MAX_RETRIES = 1
-
-        // Preview image
-        private const val PREVIEW_IN_SAMPLE_SIZE = 4
-        private const val PREVIEW_MAX_DIMENSION = 300f
-        private const val PREVIEW_JPEG_QUALITY = 70
+        // Mode row: Pro | Video | Photo | Fastshot | Portrait. Video (0.297)
+        // and Photo (0.50) were measured from screenshots; Pro/Fastshot/Portrait
+        // are estimated from the same ~0.20 spacing and may need tuning.
+        private val MODE_NAMES = listOf("pro", "video", "photo", "fastshot", "portrait")
+        private val MODE_X_FRACTIONS = listOf(0.10f, 0.297f, 0.50f, 0.70f, 0.90f)
+        private const val PHOTO_MODE_INDEX = 2
+        private const val VIDEO_MODE_INDEX = 1
     }
 
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var messageClient: MessageClient
     private lateinit var settings: SettingsManager
-    private var burstCancelled = false
 
     // Common content descriptions for camera controls across popular camera apps
     private val shutterDescriptions = listOf(
@@ -95,9 +83,6 @@ class CameraControlService : AccessibilityService() {
     private val videoDescriptions = listOf(
         "video", "record", "video mode", "switch to video",
         "start recording", "record video", "movie", "camcorder"
-    )
-    private val photoModeDescriptions = listOf(
-        "photo", "photo mode", "switch to photo", "camera mode"
     )
 
     override fun onServiceConnected() {
@@ -138,10 +123,16 @@ class CameraControlService : AccessibilityService() {
         Log.d(TAG, "CameraControlService destroyed")
     }
 
-    // Track flash state for direct toggling
-    private var flashOn = false
     // Track video recording state
     private var isRecording = false
+
+    // MIUI's camera exposes no reliable accessibility signal to distinguish
+    // between mode-row positions (same "Shutter button" label in Photo/Video),
+    // so we track which mode the app itself last scrolled to, as an index into
+    // MODE_NAMES/MODE_X_FRACTIONS, rather than trying to detect it from the
+    // live UI. This can go stale if the mode is changed by hand on the phone
+    // between watch commands; the next open/switch/scroll command re-syncs it.
+    private var currentModeIndex = PHOTO_MODE_INDEX
 
     private fun requireCameraOpen(action: () -> Unit) {
         val root = rootInActiveWindow
@@ -157,35 +148,13 @@ class CameraControlService : AccessibilityService() {
     fun handleCommand(command: String) {
         Log.d(TAG, "handleCommand: $command")
 
-        // Parse zoom commands with steps: "zoom_in:3" or "zoom_out:2"
-        // Handle delete_preview with URI parameter
-        if (command.startsWith("delete_preview:")) {
-            val uriStr = command.removePrefix("delete_preview:")
-            deletePreview(uriStr)
-            return
-        }
-
-        if (command.startsWith("zoom_in:") || command.startsWith("zoom_out:")) {
-            val parts = command.split(":")
-            val zoomIn = command.startsWith("zoom_in")
-            val steps = parts.getOrNull(1)?.toIntOrNull() ?: 1
-            requireCameraOpen { zoom(zoomIn = zoomIn, steps = steps) }
-            return
-        }
-
         when (command) {
             "open_camera" -> openCamera()
             "capture" -> capture()
-            "open_video" -> openVideoCamera()
+            "scroll_mode_left" -> requireCameraOpen { scrollMode(left = true) }
+            "scroll_mode_right" -> requireCameraOpen { scrollMode(left = false) }
             "switch_camera" -> requireCameraOpen { switchCamera() }
-            "toggle_flash" -> requireCameraOpen { toggleFlash() }
-            "zoom_in" -> requireCameraOpen { zoom(zoomIn = true, steps = 1) }
-            "zoom_out" -> requireCameraOpen { zoom(zoomIn = false, steps = 1) }
-            "open_gallery" -> openGallery()
-            "burst_capture" -> requireCameraOpen { burstCapture() }
-            "cancel_burst" -> cancelBurst()
             "capture_timer" -> captureWithTimer()
-            "preview_capture" -> requireCameraOpen { previewCapture() }
             else -> {
                 Log.w(TAG, "Unknown command: $command")
                 sendStatusToWatch("unknown_command")
@@ -193,13 +162,33 @@ class CameraControlService : AccessibilityService() {
         }
     }
 
+    /**
+     * "Open Camera" always guarantees Photo mode on return. If the camera app
+     * is already running, re-firing the launch intent would just bring the
+     * existing activity forward without actually resetting its UI — so our
+     * tracked currentModeIndex would say Photo while the real screen stayed
+     * in whatever mode it was left in (this caused the mode desync). Instead,
+     * when already open, swipe back to Photo the same way scrollMode() does.
+     */
     private fun openCamera() {
+        val root = rootInActiveWindow
+        if (root != null && isCameraAppInForeground(root)) {
+            root.recycle()
+            if (currentModeIndex != PHOTO_MODE_INDEX) {
+                swipeToModeIndex(PHOTO_MODE_INDEX) { sendStatusToWatch("photo_mode") }
+            } else {
+                sendStatusToWatch("camera_opened")
+            }
+            return
+        }
+        root?.recycle()
         try {
             val intent = Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             Log.d(TAG, "openCamera: launching STILL_IMAGE_CAMERA intent")
             startActivity(intent)
+            currentModeIndex = PHOTO_MODE_INDEX
             sendStatusToWatch("camera_opened")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to open camera with STILL_IMAGE intent", e)
@@ -209,6 +198,7 @@ class CameraControlService : AccessibilityService() {
                 }
                 Log.d(TAG, "openCamera: trying IMAGE_CAPTURE fallback")
                 startActivity(fallback)
+                currentModeIndex = PHOTO_MODE_INDEX
                 sendStatusToWatch("camera_opened")
             } catch (e2: Exception) {
                 Log.e(TAG, "Failed to open camera (fallback)", e2)
@@ -217,17 +207,19 @@ class CameraControlService : AccessibilityService() {
         }
     }
 
-    private fun openVideoCamera() {
-        try {
-            val intent = Intent(MediaStore.INTENT_ACTION_VIDEO_CAMERA).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startActivity(intent)
-            sendStatusToWatch("video_camera_opened")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to open video camera", e)
-            sendStatusToWatch("video_open_failed")
+    /**
+     * Scroll the mode row one step left or right, requires the camera app to
+     * already be open (see requireCameraOpen). Clamped to the ends of
+     * MODE_NAMES — no wraparound.
+     */
+    private fun scrollMode(left: Boolean) {
+        val targetIndex = if (left) currentModeIndex - 1 else currentModeIndex + 1
+        if (targetIndex < 0 || targetIndex >= MODE_NAMES.size) {
+            Log.d(TAG, "scrollMode: already at ${if (left) "first" else "last"} mode")
+            sendStatusToWatch("mode:${MODE_NAMES[currentModeIndex]}")
+            return
         }
+        swipeToModeIndex(targetIndex) { sendStatusToWatch("mode:${MODE_NAMES[targetIndex]}") }
     }
 
     /**
@@ -271,37 +263,26 @@ class CameraControlService : AccessibilityService() {
     private fun captureAfterOpen() {
         Log.d(TAG, "captureAfterOpen: retrying after camera open (photo priority)")
 
-        // First try photo shutter buttons
-        if (findAndClickButton(shutterDescriptions)) {
-            sendStatusToWatch("captured")
-            return
-        }
-
-        // Camera might have opened in video mode despite STILL_IMAGE intent.
-        // Check if we see record buttons but no shutter — means we're in video mode.
-        // Try to switch to photo mode by clicking the photo mode tab.
-        Log.d(TAG, "captureAfterOpen: no shutter found, checking if in video mode")
-        if (isInVideoMode()) {
-            Log.d(TAG, "captureAfterOpen: detected video mode, switching to photo")
-            if (switchToPhotoMode()) {
-                // Wait for mode switch, then try capture again
+        // Camera might have opened in a non-photo mode despite STILL_IMAGE
+        // intent. Swipe back to Photo before capturing.
+        if (currentModeIndex != PHOTO_MODE_INDEX) {
+            Log.d(TAG, "captureAfterOpen: not in photo mode, switching to photo")
+            swipeToModeIndex(PHOTO_MODE_INDEX) {
+                sendStatusToWatch("photo_mode")
                 handler.postDelayed({
-                    Log.d(TAG, "captureAfterOpen: retrying capture after mode switch")
-                    if (findAndClickButton(shutterDescriptions)) {
-                        sendStatusToWatch("captured")
-                    } else if (settings.isShutterFallbackEnabled()) {
+                    Log.d(TAG, "captureAfterOpen: capturing after mode switch")
+                    if (settings.isShutterFallbackEnabled()) {
                         tapShutterFallback()
                     } else {
                         sendStatusToWatch("shutter_not_found")
                     }
                 }, MODE_SWITCH_DELAY_MS)
-                return
             }
+            return
         }
 
-        // Fallback
+        // Photo shutter uses a coordinate tap, not a semantic click — see doCapture()
         if (settings.isShutterFallbackEnabled()) {
-            Log.d(TAG, "captureAfterOpen: trying fallback tap")
             tapShutterFallback()
         } else {
             sendStatusToWatch("shutter_not_found")
@@ -309,78 +290,61 @@ class CameraControlService : AccessibilityService() {
     }
 
     /**
-     * Check if the camera is currently in video mode by looking for record buttons
-     * but no photo shutter buttons.
+     * The MIUI camera's mode row (Pro/Video/Photo/Fastshot/Portrait) is a
+     * horizontal scroll carousel, not discrete buttons — the active mode is
+     * whichever label sits centered. A semantic click on the mode text does
+     * nothing useful here; only a real horizontal swipe scrolls the carousel.
+     * Swiping from the current mode's x-position to the target mode's
+     * x-position moves that target into the centered/active slot.
      */
-    private fun isInVideoMode(existingRoot: AccessibilityNodeInfo? = null): Boolean {
-        val root = existingRoot ?: rootInActiveWindow ?: return false
-        var hasRecord = false
-        var hasShutter = false
+    private fun swipeToModeIndex(targetIndex: Int, onDone: () -> Unit) {
+        val (screenWidth, screenHeight) = getScreenSize()
+        val fromX = screenWidth * MODE_X_FRACTIONS[currentModeIndex]
+        val toX = screenWidth * MODE_X_FRACTIONS[targetIndex]
+        val y = screenHeight * MIUI_MODE_ROW_Y_FRACTION
 
-        for (desc in recordDescriptions) {
-            val nodes = root.findAccessibilityNodeInfosByText(desc)
-            if (nodes.isNotEmpty()) {
-                hasRecord = true
-                for (node in nodes) node.recycle()
-                break
-            }
+        val path = Path().apply {
+            moveTo(fromX, y)
+            lineTo(toX, y)
         }
-        for (desc in shutterDescriptions) {
-            val nodes = root.findAccessibilityNodeInfosByText(desc)
-            if (nodes.isNotEmpty()) {
-                hasShutter = true
-                for (node in nodes) node.recycle()
-                break
-            }
-        }
-        if (existingRoot == null) root.recycle()
-        Log.d(TAG, "isInVideoMode: hasRecord=$hasRecord, hasShutter=$hasShutter")
-        return hasRecord && !hasShutter
-    }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, MIUI_MODE_SWIPE_DURATION_MS))
+            .build()
 
-    /**
-     * Try to switch from video mode to photo mode by clicking a "Photo" mode tab/button.
-     */
-    private fun switchToPhotoMode(): Boolean {
-        Log.d(TAG, "switchToPhotoMode: looking for photo mode button")
-        if (findAndClickButton(photoModeDescriptions)) {
-            Log.d(TAG, "switchToPhotoMode: clicked photo mode button")
-            sendStatusToWatch("photo_mode")
-            return true
-        }
-        Log.d(TAG, "switchToPhotoMode: no photo mode button found")
-        return false
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                Log.d(TAG, "swipeToModeIndex: swipe completed ($fromX -> $toX)")
+                currentModeIndex = targetIndex
+                onDone()
+            }
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                Log.w(TAG, "swipeToModeIndex: swipe cancelled")
+            }
+        }, null)
     }
 
     private fun doCapture() {
-        // If currently recording video, stop the recording first
-        if (isRecording) {
-            if (findAndClickButton(recordDescriptions)) {
-                isRecording = false
-                sendStatusToWatch("recording_stopped")
-                return
-            }
-        }
-        // Try photo shutter buttons FIRST — camera apps may have "record"
-        // nodes even in photo mode, so we must prioritize shutter
-        if (findAndClickButton(shutterDescriptions)) {
-            sendStatusToWatch("captured")
-            return
-        }
-        // Then try record/stop button (for video mode or stopping recording)
-        if (findAndClickButton(recordDescriptions)) {
-            isRecording = true
-            sendStatusToWatch("recording_started")
-            return
-        }
-        // Fallback: tap the shutter/record button position on screen
-        if (settings.isShutterFallbackEnabled()) {
-            Log.d(TAG, "doCapture: shutter/record not found by description, trying fallback tap")
-            tapShutterFallback()
-        } else {
-            Log.d(TAG, "doCapture: shutter/record not found and fallback disabled")
+        if (!settings.isShutterFallbackEnabled()) {
+            Log.d(TAG, "doCapture: shutter fallback disabled, cannot capture")
             sendStatusToWatch("shutter_not_found")
+            return
         }
+        // The shutter/record button sits at the same screen position in both
+        // photo and video mode on MIUI (only its icon changes, white ring vs.
+        // red circle) and neither responds reliably to a semantic ACTION_CLICK,
+        // so a single coordinate tap drives capture, record-start, and
+        // record-stop alike.
+        if (isRecording) {
+            tapShutterFallback(onCapturedStatus = "recording_stopped")
+            isRecording = false
+            return
+        }
+        if (currentModeIndex == VIDEO_MODE_INDEX) {
+            tapShutterFallback(onCapturedStatus = "recording_started")
+            isRecording = true
+            return
+        }
+        tapShutterFallback()
     }
 
     private fun isCameraAppInForeground(root: AccessibilityNodeInfo): Boolean {
@@ -420,43 +384,31 @@ class CameraControlService : AccessibilityService() {
     }
 
     private fun switchCamera() {
-        if (findAndClickButton(switchCameraDescriptions)) {
-            sendStatusToWatch("camera_switched")
-        } else {
-            // Dump all visible nodes to help debug unsupported camera apps
-            dumpVisibleNodes("switchCamera")
-            sendStatusToWatch("switch_not_found")
-        }
-    }
+        // The flip-camera icon shares the shutter-button unreliability (MIUI's
+        // custom view accepts ACTION_CLICK without actually flipping the camera),
+        // so we tap its known screen position instead of a semantic click.
+        val (screenWidth, screenHeight) = getScreenSize()
+        val x = screenWidth * MIUI_FLIP_CAMERA_X_FRACTION
+        val fallbackPercent = settings.getShutterFallbackPosition() / 100f
+        val y = screenHeight * fallbackPercent
 
-    /**
-     * Log all visible clickable nodes in the current window for debugging.
-     * Helps identify button descriptions on unsupported camera apps.
-     */
-    private fun dumpVisibleNodes(context: String) {
-        val rootNode = rootInActiveWindow ?: return
-        val allNodes = findAllNodes(rootNode)
-        Log.d(TAG, "=== VISIBLE NODES ($context) ===")
-        for (node in allNodes) {
-            if (node.isVisibleToUser) {
-                val desc = node.contentDescription?.toString() ?: ""
-                val text = node.text?.toString() ?: ""
-                val cls = node.className?.toString() ?: ""
-                val clickable = node.isClickable
-                if (desc.isNotEmpty() || text.isNotEmpty()) {
-                    Log.d(TAG, "  desc=\"$desc\" text=\"$text\" class=$cls clickable=$clickable")
-                }
+        val path = Path().apply { moveTo(x, y) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, settings.getGestureTapDurationMs().toLong()))
+            .build()
+
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                Log.d(TAG, "switchCamera: tap gesture completed at ($x, $y)")
+                sendStatusToWatch("camera_switched")
             }
-        }
-        Log.d(TAG, "=== END NODES ===")
-        recycleNodes(allNodes)
-        rootNode.recycle()
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                Log.w(TAG, "switchCamera: tap gesture cancelled")
+                sendStatusToWatch("switch_not_found")
+            }
+        }, null)
     }
 
-    /**
-     * Zoom in or out by performing a pinch gesture on screen.
-     * Uses two-finger spread (zoom in) or pinch (zoom out).
-     */
     private fun getScreenSize(): Pair<Int, Int> {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -471,421 +423,7 @@ class CameraControlService : AccessibilityService() {
         }
     }
 
-    private fun zoom(zoomIn: Boolean, steps: Int = 1) {
-        val (screenWidth, screenHeight) = getScreenSize()
-        val centerX = screenWidth / 2f
-        val centerY = screenHeight / 2f
-        val baseOffset = screenWidth * ZOOM_BASE_OFFSET_FRACTION
-        val offset = baseOffset * steps.coerceIn(1, ZOOM_MAX_STEPS)
-        val duration = ZOOM_GESTURE_DURATION_MS
-
-        // Zoom in = spread outward, zoom out = pinch inward
-        val startOffset = if (zoomIn) offset / 2 else offset
-        val endOffset = if (zoomIn) offset else offset / 2
-
-        val path1 = Path().apply {
-            moveTo(centerX - startOffset, centerY)
-            lineTo(centerX - endOffset, centerY)
-        }
-        val path2 = Path().apply {
-            moveTo(centerX + startOffset, centerY)
-            lineTo(centerX + endOffset, centerY)
-        }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path1, 0, duration))
-            .addStroke(GestureDescription.StrokeDescription(path2, 0, duration))
-            .build()
-        val label = if (zoomIn) "in" else "out"
-        Log.d(TAG, "zoom: $label steps=$steps offset=$offset")
-        dispatchGesture(gesture, object : GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                Log.d(TAG, "Zoom $label gesture completed")
-            }
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                Log.w(TAG, "Zoom $label gesture cancelled")
-            }
-        }, null)
-    }
-
-    private fun toggleFlash() {
-        // Samsung camera (and many others) use icon-only flash buttons that don't
-        // expose useful text to accessibility. Strategy:
-        // 1. Try accessibility click on the main flash button to open submenu
-        // 2. After submenu opens, find submenu options by their node bounds
-        //    (leftmost = off, rightmost = on) — no hardcoded coords
-        Log.d(TAG, "toggleFlash: flashOn=$flashOn")
-
-        // Dump nodes only in debug builds
-        if (BuildConfig.DEBUG) dumpVisibleNodes()
-
-        // Try accessibility-based approach
-        if (tryAccessibilityFlashToggle()) {
-            return
-        }
-
-            // If accessibility matching totally failed, try findAndClickButton with flash descriptions
-            Log.d(TAG, "toggleFlash: specific flash matching failed, trying broad search")
-            if (findAndClickButton(flashDescriptions)) {
-                flashSubmenuRetries = 0
-                handler.postDelayed({ selectFlashSubmenuOption() }, settings.getFlashSubmenuDelayMs().toLong())
-            return
-        }
-
-        Log.d(TAG, "toggleFlash: no flash button found at all")
-        sendStatusToWatch("flash_not_found")
-    }
-
-    /**
-     * Try to toggle flash using accessibility node matching.
-     * Returns true if we found and clicked something.
-     */
-    private fun tryAccessibilityFlashToggle(): Boolean {
-        val rootNode = rootInActiveWindow ?: return false
-
-        // Search all clickable nodes for flash-related content descriptions
-        val clickable = findClickableNodes(rootNode)
-        for (node in clickable) {
-            val contentDesc = node.contentDescription?.toString()?.lowercase() ?: ""
-
-            // Match nodes whose contentDescription is specifically about flash
-            // (e.g. "Flash", "Flash off", "Flash on", "Flash auto")
-            // but NOT "Motion photo" or similar
-            if (contentDesc.contains("flash") && !contentDesc.contains("motion")) {
-                if (node.isVisibleToUser) {
-                    val result = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (result) {
-                        Log.d(TAG, "Accessibility: clicked flash node: '$contentDesc'")
-                        recycleNodes(clickable)
-                        rootNode.recycle()
-
-                        // After clicking, wait for submenu and try to select on/off
-                        flashSubmenuRetries = 0
-                        handler.postDelayed({
-                            selectFlashSubmenuOption()
-                        }, settings.getFlashSubmenuDelayMs().toLong())
-                        return true
-                    }
-                }
-            }
-        }
-
-        recycleNodes(clickable)
-        rootNode.recycle()
-        return false
-    }
-
-    /**
-     * After the flash submenu opens, find and click the on or off option.
-     * Samsung camera uses text field like BACK_FLASH_OFF, BACK_FLASH_ON,
-     * FRONT_FLASH_OFF, FRONT_FLASH_ON to identify flash submenu items.
-     * All items share desc='Flash', so we must check the text field.
-     */
-    private var flashSubmenuRetries = 0
-
-    private fun selectFlashSubmenuOption() {
-        if (BuildConfig.DEBUG) dumpVisibleNodes()
-
-        val rootNode = rootInActiveWindow ?: run {
-            flashOn = !flashOn
-            sendStatusToWatch(if (flashOn) "flash_on" else "flash_off")
-            return
-        }
-
-        val allNodes = findAllNodes(rootNode)
-        val wantOn = !flashOn  // If flash is currently off, we want to turn it on
-        val screenHeight = resources.displayMetrics.heightPixels
-
-        data class FlashNode(val node: AccessibilityNodeInfo, val desc: String, val text: String, val bounds: android.graphics.Rect)
-
-        // Strategy 1 (Samsung-specific): Match on text field containing FLASH_OFF / FLASH_ON
-        // Samsung camera sets text like "BACK_FLASH_OFF", "BACK_FLASH_ON", "FRONT_FLASH_OFF", etc.
-        val targetText = if (wantOn) "FLASH_ON" else "FLASH_OFF"
-        for (node in allNodes) {
-            val text = node.text?.toString() ?: ""
-            if (text.contains(targetText)) {
-                val bounds = android.graphics.Rect()
-                node.getBoundsInScreen(bounds)
-                Log.d(TAG, "Flash submenu (text match): found '$text' at $bounds, trying click/tap")
-                if (tryClickOrTap(node, bounds)) {
-                    flashOn = wantOn
-                    sendStatusToWatch(if (flashOn) "flash_on" else "flash_off")
-                    recycleNodes(allNodes)
-                    rootNode.recycle()
-                    return
-                }
-            }
-        }
-
-        // Strategy 2: Exact match on contentDescription containing "flash on"/"flash off"
-        val targetPhrase = if (wantOn) "flash on" else "flash off"
-        for (node in allNodes) {
-            val contentDesc = node.contentDescription?.toString()?.lowercase() ?: ""
-            if (contentDesc.contains(targetPhrase) && !contentDesc.contains("motion") && node.isVisibleToUser) {
-                val bounds = android.graphics.Rect()
-                node.getBoundsInScreen(bounds)
-                Log.d(TAG, "Flash submenu (desc match): found '$contentDesc' at $bounds")
-                if (tryClickOrTap(node, bounds)) {
-                    flashOn = wantOn
-                    sendStatusToWatch(if (flashOn) "flash_on" else "flash_off")
-                    recycleNodes(allNodes)
-                    rootNode.recycle()
-                    return
-                }
-            }
-        }
-
-        // Strategy 3: Position-based — collect flash submenu nodes in top area, sort by X
-        val flashNodes = mutableListOf<FlashNode>()
-        for (node in allNodes) {
-            val contentDesc = node.contentDescription?.toString()?.lowercase() ?: ""
-            val text = node.text?.toString()?.lowercase() ?: ""
-            if (contentDesc.contains("motion") || text.contains("motion")) continue
-            if (!node.isVisibleToUser) continue
-
-            val bounds = android.graphics.Rect()
-            node.getBoundsInScreen(bounds)
-            // Submenu appears below the main toolbar — look for nodes in top 30%
-            if (bounds.top >= screenHeight * FLASH_SUBMENU_SCREEN_TOP_FRACTION) continue
-            if (bounds.width() < FLASH_SUBMENU_MIN_NODE_SIZE || bounds.height() < FLASH_SUBMENU_MIN_NODE_SIZE) continue
-
-            // Must contain "flash" in desc or text, or be a standalone on/off/auto
-            val isFlashOption = contentDesc.contains("flash") || text.contains("flash")
-                    || contentDesc == "off" || contentDesc == "on" || contentDesc == "auto"
-            if (isFlashOption) {
-                flashNodes.add(FlashNode(node, contentDesc, text, bounds))
-                Log.d(TAG, "Flash candidate: desc='$contentDesc' text='$text' bounds=$bounds")
-            }
-        }
-
-        // Filter out the main flash button (it's in the top toolbar row, y < 200 typically)
-        // Submenu items appear below the main toolbar
-        val submenuNodes = flashNodes.filter { it.bounds.top > FLASH_SUBMENU_TOOLBAR_THRESHOLD }
-        val candidates = if (submenuNodes.size >= 2) submenuNodes else flashNodes
-
-        if (candidates.size >= 2) {
-            val sorted = candidates.sortedBy { it.bounds.left }
-            val target = if (wantOn) sorted.last() else sorted.first()
-            Log.d(TAG, "Flash submenu (position): picking '${target.desc}' text='${target.text}' (want ${if (wantOn) "on" else "off"})")
-            if (tryClickOrTap(target.node, target.bounds)) {
-                flashOn = wantOn
-                sendStatusToWatch(if (flashOn) "flash_on" else "flash_off")
-                recycleNodes(allNodes)
-                rootNode.recycle()
-                return
-            }
-        }
-
-        // No submenu found — retry once with longer delay (submenu may not have rendered yet)
-        recycleNodes(allNodes)
-        rootNode.recycle()
-        if (flashSubmenuRetries < FLASH_SUBMENU_MAX_RETRIES) {
-            flashSubmenuRetries++
-            Log.d(TAG, "Flash submenu not found, retrying (attempt $flashSubmenuRetries)")
-            handler.postDelayed({ selectFlashSubmenuOption() }, FLASH_SUBMENU_RETRY_DELAY_MS)
-            return
-        }
-
-        // After retry, assume the first click toggled it
-        flashSubmenuRetries = 0
-        flashOn = !flashOn
-        Log.d(TAG, "No flash submenu options found after retry, assuming toggle -> flash ${if (flashOn) "on" else "off"}")
-        sendStatusToWatch(if (flashOn) "flash_on" else "flash_off")
-    }
-
-    /**
-     * Try to activate a node: first by accessibility click, then parent click, then gesture tap.
-     */
-    private fun tryClickOrTap(node: AccessibilityNodeInfo, bounds: android.graphics.Rect): Boolean {
-        // Try direct click
-        if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-            Log.d(TAG, "tryClickOrTap: direct click succeeded")
-            return true
-        }
-        // Try parent click
-        val parent = node.parent
-        if (parent != null) {
-            if (parent.isClickable && parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                Log.d(TAG, "tryClickOrTap: parent click succeeded")
-                parent.recycle()
-                return true
-            }
-            parent.recycle()
-        }
-        // Gesture tap at node center
-        Log.d(TAG, "tryClickOrTap: gesture tap at (${bounds.centerX()}, ${bounds.centerY()})")
-        tapAtPosition(bounds.centerX().toFloat(), bounds.centerY().toFloat()) {}
-        return true  // Assume gesture will work
-    }
-
-    /**
-     * Tap a specific screen position using a gesture.
-     * Uses the node's own reported bounds — no hardcoded coordinates.
-     */
-    private fun tapAtPosition(x: Float, y: Float, onComplete: () -> Unit) {
-        val path = Path().apply { moveTo(x, y) }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, settings.getGestureTapDurationMs().toLong()))
-            .build()
-
-        dispatchGesture(gesture, object : GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                Log.d(TAG, "Tap gesture completed at ($x, $y)")
-                onComplete()
-            }
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                Log.w(TAG, "Tap gesture cancelled at ($x, $y)")
-            }
-        }, null)
-    }
-
-    /**
-     * Dump all visible clickable nodes to logcat for debugging.
-     */
-    private fun dumpVisibleNodes() {
-        val rootNode = rootInActiveWindow ?: run {
-            Log.d(TAG, "dumpVisibleNodes: no active window")
-            return
-        }
-        val clickable = findClickableNodes(rootNode)
-        Log.d(TAG, "=== VISIBLE CLICKABLE NODES (${clickable.size}) ===")
-        for ((i, node) in clickable.withIndex()) {
-            val contentDesc = node.contentDescription?.toString() ?: "(none)"
-            val text = node.text?.toString() ?: "(none)"
-            val className = node.className?.toString() ?: "(none)"
-            val bounds = android.graphics.Rect()
-            node.getBoundsInScreen(bounds)
-            Log.d(TAG, "  [$i] class=$className desc='$contentDesc' text='$text' bounds=$bounds visible=${node.isVisibleToUser}")
-        }
-        Log.d(TAG, "=== END NODES ===")
-        recycleNodes(clickable)
-        rootNode.recycle()
-    }
-
-    /**
-     * Dump ALL nodes (clickable or not) to logcat for debugging flash submenu.
-     */
-    private fun dumpAllNodes(label: String = "dumpAllNodes") {
-        val rootNode = rootInActiveWindow ?: run {
-            Log.d(TAG, "$label: no active window")
-            return
-        }
-        val all = findAllNodes(rootNode)
-        Log.d(TAG, "=== $label: ALL NODES (${all.size}) ===")
-        for ((i, node) in all.withIndex()) {
-            val bounds = android.graphics.Rect()
-            node.getBoundsInScreen(bounds)
-            val contentDesc = node.contentDescription?.toString() ?: "(none)"
-            val text = node.text?.toString() ?: "(none)"
-            val className = node.className?.toString() ?: "(none)"
-            Log.d(TAG, "  [$i] class=$className desc='$contentDesc' text='$text' bounds=$bounds clickable=${node.isClickable} visible=${node.isVisibleToUser}")
-        }
-        Log.d(TAG, "=== END $label ===")
-        recycleNodes(all)
-        rootNode.recycle()
-    }
-
-    private fun findAndClickButton(descriptions: List<String>): Boolean {
-        val rootNode = rootInActiveWindow ?: return false
-
-        // Search by content description
-        for (desc in descriptions) {
-            val nodes = rootNode.findAccessibilityNodeInfosByText(desc)
-            for (node in nodes) {
-                if (node.isClickable && node.isVisibleToUser) {
-                    val result = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (result) {
-                        Log.d(TAG, "Clicked button with text: $desc")
-                        node.recycle()
-                        rootNode.recycle()
-                        return true
-                    }
-                }
-                node.recycle()
-            }
-        }
-
-        // Search clickable nodes and check content description with fuzzy matching
-        val clickable = findClickableNodes(rootNode)
-        for (node in clickable) {
-            val contentDesc = node.contentDescription?.toString()?.lowercase() ?: ""
-            val text = node.text?.toString()?.lowercase() ?: ""
-            for (desc in descriptions) {
-                if (contentDesc.contains(desc) || text.contains(desc)) {
-                    val result = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (result) {
-                        Log.d(TAG, "Clicked node with contentDescription containing: $desc")
-                        recycleNodes(clickable)
-                        rootNode.recycle()
-                        return true
-                    }
-                }
-            }
-        }
-
-        // Also try clicking parent of matching non-clickable nodes
-        for (desc in descriptions) {
-            val nodes = rootNode.findAccessibilityNodeInfosByText(desc)
-            for (node in nodes) {
-                val parent = node.parent
-                if (parent != null && parent.isClickable) {
-                    val result = parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (result) {
-                        Log.d(TAG, "Clicked parent of node with text: $desc")
-                        parent.recycle()
-                        node.recycle()
-                        rootNode.recycle()
-                        return true
-                    }
-                    parent.recycle()
-                }
-                node.recycle()
-            }
-        }
-
-        recycleNodes(clickable)
-        rootNode.recycle()
-        return false
-    }
-
-    private fun findClickableNodes(node: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
-        val result = mutableListOf<AccessibilityNodeInfo>()
-        if (node.isClickable) {
-            result.add(AccessibilityNodeInfo.obtain(node))
-        }
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            result.addAll(findClickableNodes(child))
-            child.recycle()
-        }
-        return result
-    }
-
-    /**
-     * Find ALL nodes in the accessibility tree (clickable or not).
-     * Samsung camera submenu items may not report as clickable.
-     */
-    private fun findAllNodes(node: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
-        val result = mutableListOf<AccessibilityNodeInfo>()
-        result.add(AccessibilityNodeInfo.obtain(node))
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            result.addAll(findAllNodes(child))
-            child.recycle()
-        }
-        return result
-    }
-
-    private fun recycleNodes(nodes: List<AccessibilityNodeInfo>) {
-        for (node in nodes) {
-            try {
-                node.recycle()
-            } catch (e: Exception) {
-                // Already recycled
-            }
-        }
-    }
-
-    private fun tapShutterFallback() {
+    private fun tapShutterFallback(onCapturedStatus: String = "captured") {
         val (screenWidth, screenHeight) = getScreenSize()
         val x = screenWidth / 2f
         val fallbackPercent = settings.getShutterFallbackPosition() / 100f
@@ -902,7 +440,7 @@ class CameraControlService : AccessibilityService() {
         dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 Log.d(TAG, "Tap gesture completed at ($x, $y)")
-                sendStatusToWatch("captured")
+                sendStatusToWatch(onCapturedStatus)
             }
 
             override fun onCancelled(gestureDescription: GestureDescription?) {
@@ -910,138 +448,6 @@ class CameraControlService : AccessibilityService() {
                 sendStatusToWatch("capture_failed")
             }
         }, null)
-    }
-
-    private fun previewCapture() {
-        doCapture()
-        sendStatusToWatch("preview_capturing")
-        // Wait for photo to save, then read and send preview
-        handler.postDelayed({ sendPreviewToWatch() }, PREVIEW_CAPTURE_DELAY_MS)
-    }
-
-    private fun sendPreviewToWatch() {
-        try {
-            val projection = arrayOf(MediaStore.Images.Media._ID)
-            val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
-            Log.d(TAG, "sendPreviewToWatch: querying MediaStore for latest image")
-            val cursor = contentResolver.query(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                projection, null, null, sortOrder
-            )
-            if (cursor == null) {
-                Log.e(TAG, "sendPreviewToWatch: cursor is null - permission denied?")
-                sendStatusToWatch("preview_failed")
-                return
-            }
-            cursor.use {
-                Log.d(TAG, "sendPreviewToWatch: cursor count=${it.count}")
-                if (it.moveToFirst()) {
-                    val id = it.getLong(it.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
-                    val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-                    Log.d(TAG, "sendPreviewToWatch: latest image uri=$uri")
-
-                    val inputStream = contentResolver.openInputStream(uri)
-                    val options = BitmapFactory.Options().apply { inSampleSize = PREVIEW_IN_SAMPLE_SIZE }
-                    val bitmap = BitmapFactory.decodeStream(inputStream, null, options)
-                    inputStream?.close()
-
-                    if (bitmap != null) {
-                        val maxDim = maxOf(bitmap.width, bitmap.height)
-                        val scale = PREVIEW_MAX_DIMENSION / maxDim
-                        val resized = Bitmap.createScaledBitmap(
-                            bitmap,
-                            (bitmap.width * scale).toInt(),
-                            (bitmap.height * scale).toInt(),
-                            true
-                        )
-
-                        val baos = ByteArrayOutputStream()
-                        resized.compress(Bitmap.CompressFormat.JPEG, PREVIEW_JPEG_QUALITY, baos)
-                        val imageBytes = baos.toByteArray()
-
-                        val request = PutDataMapRequest.create(PATH_PREVIEW).apply {
-                            dataMap.putByteArray("image", imageBytes)
-                            dataMap.putString("uri", uri.toString())
-                            dataMap.putLong("timestamp", System.currentTimeMillis())
-                        }.asPutDataRequest().setUrgent()
-                        Wearable.getDataClient(this).putDataItem(request)
-
-                        sendStatusToWatch("preview_ready")
-                        bitmap.recycle()
-                        resized.recycle()
-                        Log.d(TAG, "Preview sent to watch: ${imageBytes.size} bytes")
-                    } else {
-                        sendStatusToWatch("preview_failed")
-                    }
-                } else {
-                    sendStatusToWatch("preview_failed")
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to send preview", e)
-            sendStatusToWatch("preview_failed")
-        }
-    }
-
-    private fun deletePreview(uriStr: String) {
-        try {
-            val intent = Intent(this, DeletePhotoActivity::class.java).apply {
-                putExtra(DeletePhotoActivity.EXTRA_URI, uriStr)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startActivity(intent)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch delete activity", e)
-            sendStatusToWatch("preview_delete_failed")
-        }
-    }
-
-    private fun openGallery() {
-        try {
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                type = "image/*"
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startActivity(intent)
-            sendStatusToWatch("gallery_opened")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to open gallery", e)
-            sendStatusToWatch("gallery_failed")
-        }
-    }
-
-    private fun burstCapture() {
-        burstCancelled = false
-        val burstCount = settings.getBurstCount()
-        sendStatusToWatch("burst_$burstCount")
-        burstCaptureNext(1, burstCount)
-    }
-
-    private fun cancelBurst() {
-        burstCancelled = true
-        handler.removeCallbacksAndMessages(null)
-        sendStatusToWatch("burst_cancelled")
-        Log.d(TAG, "Burst capture cancelled")
-    }
-
-    private fun burstCaptureNext(current: Int, total: Int) {
-        if (burstCancelled || current > total) return
-        // Try to click the shutter button
-        val clicked = findAndClickButton(shutterDescriptions)
-        if (clicked) {
-            sendStatusToWatch("burst_${current}_of_$total")
-            Log.d(TAG, "burstCapture: shot $current/$total taken")
-            // Wait before next shot to let camera process
-            val interval = when (flashOn) {
-                true -> BURST_CAPTURE_FLASH_INTERVAL_MS
-                false -> BURST_CAPTURE_INTERVAL_MS
-            }
-            handler.postDelayed({ burstCaptureNext(current + 1, total) }, interval)
-        } else {
-            // Shutter not found yet, retry after a short delay (up to 2s)
-            Log.d(TAG, "burstCapture: shutter not found for shot $current, retrying...")
-            handler.postDelayed({ burstCaptureNext(current, total) }, BURST_SHUTTER_RETRY_DELAY_MS)
-        }
     }
 
     private fun captureWithTimer() {

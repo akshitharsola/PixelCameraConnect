@@ -11,11 +11,9 @@ class SettingsManager(context: Context) {
         // Camera Control
         private const val KEY_AUTO_OPEN_CAMERA = "auto_open_camera"
         private const val KEY_CAMERA_LAUNCH_DELAY = "camera_launch_delay_ms"
-        private const val KEY_BURST_COUNT = "burst_count"
         private const val KEY_SHUTTER_FALLBACK_ENABLED = "shutter_fallback_enabled"
         private const val KEY_SHUTTER_FALLBACK_POSITION = "shutter_fallback_position"
         private const val KEY_GESTURE_TAP_DURATION = "gesture_tap_duration_ms"
-        private const val KEY_FLASH_SUBMENU_DELAY = "flash_submenu_delay_ms"
 
         // Watch
         private const val KEY_HAPTIC_DURATION = "haptic_duration_ms"
@@ -24,10 +22,8 @@ class SettingsManager(context: Context) {
 
         // Default values
         private const val DEFAULT_CAMERA_LAUNCH_DELAY_MS = 1500
-        private const val DEFAULT_BURST_COUNT = 10
         private const val DEFAULT_SHUTTER_FALLBACK_POSITION = 85
         private const val DEFAULT_GESTURE_TAP_DURATION_MS = 50
-        private const val DEFAULT_FLASH_SUBMENU_DELAY_MS = 300
         private const val DEFAULT_HAPTIC_DURATION_MS = 30
         private const val DEFAULT_TIMER_SECONDS = 3
     }
@@ -49,14 +45,6 @@ class SettingsManager(context: Context) {
 
     fun setCameraLaunchDelayMs(delayMs: Int) {
         prefs.edit().putInt(KEY_CAMERA_LAUNCH_DELAY, delayMs).apply()
-    }
-
-    // --- Burst Photo Count ---
-
-    fun getBurstCount(): Int = prefs.getInt(KEY_BURST_COUNT, DEFAULT_BURST_COUNT)
-
-    fun setBurstCount(count: Int) {
-        prefs.edit().putInt(KEY_BURST_COUNT, count).apply()
     }
 
     // --- Shutter Fallback ---
@@ -81,14 +69,6 @@ class SettingsManager(context: Context) {
 
     fun setGestureTapDurationMs(durationMs: Int) {
         prefs.edit().putInt(KEY_GESTURE_TAP_DURATION, durationMs).apply()
-    }
-
-    // --- Flash Submenu Delay ---
-
-    fun getFlashSubmenuDelayMs(): Int = prefs.getInt(KEY_FLASH_SUBMENU_DELAY, DEFAULT_FLASH_SUBMENU_DELAY_MS)
-
-    fun setFlashSubmenuDelayMs(delayMs: Int) {
-        prefs.edit().putInt(KEY_FLASH_SUBMENU_DELAY, delayMs).apply()
     }
 
     // --- Haptic Feedback Duration ---
